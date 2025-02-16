@@ -2,7 +2,7 @@
    
   <h1>NHLBI-186 🔬</h1>
   
-  **_Data and script for processing IC-123_**
+  **_Data and script for processing NHLBI-186_**
 
 </div>
 
