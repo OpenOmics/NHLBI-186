@@ -1,5 +1,12 @@
 # R lanuage specific files 
 # and directories to ignore
+
+*.RDS
+*.rds
+*.Rds
+*.html
+*.Rdata
+
 # History files
 .Rhistory
 .Rapp.history

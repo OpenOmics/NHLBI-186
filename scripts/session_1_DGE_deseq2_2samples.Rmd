@@ -1,0 +1,233 @@
+---
+title: "NHLBI-186 ACAT1 in Human CD4 T cells Bulk RNA-seq "
+subtitle: "Session 1: Differential Expression Analysis (DESeq2) using P4_24h and P3_72h"
+date: "`r Sys.Date()`"
+author: Yue (Gary) Zhang, PhD
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE}
+#.libPaths('/Users/zhangy68/R/R_4.4.2')
+knitr::opts_chunk$set(warning = T, message = T,echo = T) 
+```
+
+```{r Initiate, results='hide'}
+## initiate ---------------------------------------------------------
+packages_to_load = c('dplyr','ggplot2','gplots','limma','stringr','usedist',
+                     'cowplot','GGally','scales','rstatix','wesanderson', 'readxl',
+                     'Biobase','reshape','edgeR','plotly','DT','tidyr','ComplexHeatmap','ggfun','ggrepel',
+                     'DESeq2','apeglm')
+# Load packages without printing output
+invisible(suppressPackageStartupMessages({
+    lapply(packages_to_load, library, character.only = TRUE)
+}))
+
+# set variables 
+setwd('./')
+set.seed('123')
+col21 <- rev(c("tomato1","darkblue","turquoise1","lightblue","darkred","mediumblue","purple","bisque",
+               "greenyellow","yellow","violetred2","darkgreen","darkgoldenrod1","deeppink3","cadetblue4",
+               "orchid2","seagreen3","purple4","dodgerblue2","red","gray27"))
+
+```
+
+```{r function section}
+source('utils.R')
+```
+
+```{r load data}
+exps = read.csv("../data/121224-JingWu-ACAT1_CD4T_RNAseq-counts-on-gene.txt", row.names = 1, sep = '\t',check.names = F)
+pheno = read.csv('../data/metadata.csv')
+# round raw count matrix. DESeq2 expects integers in the expression table
+exps = as.data.frame(apply(exps,2,round))
+```
+
+# Input dataframe
+
+## Phenotype data
+
+```{r parse data,results='hide'}
+rownames(pheno) = pheno$SampleID
+pheno$PatientID = paste0('Patient',pheno$PatientID)
+pheno$PatientID = as.factor(pheno$PatientID)
+pheno$Conditions = factor(pheno$Conditions,c('Ctrl','ACAT1'))
+# remove Naive group in "Measurements"
+pheno = subset(pheno, (PatientID == 'Patient4' & Measurements == 'Ac_24h') | (PatientID == 'Patient3' & Measurements == 'Ac_72h'))
+
+
+names(exps) = pheno$SampleID[match(names(exps),pheno$SampleID.old)]
+exps = select(exps, pheno$SampleID)
+
+# sanity check --- order of samples matches in exps and pheno
+stopifnot(all(names(exps) == rownames(pheno)))
+
+```
+
+
+```{r set variables}
+setLabel = 'ACAT1_vs_Control'
+groups = pheno$Conditions
+pair = pheno$PatientID
+groupcol = getcol(groups,2)
+# sanity check
+try(if(!all(names(exps) == rownames(pheno))) stop("pheno data and expression data does not match each other"))
+```
+
+## Phenotype data
+
+```{r show metadata}
+create_dt(pheno,'Phenotype data') 
+```
+
+## Expression matrix (raw data)
+
+```{r exp table}
+create_dt(exps,'Raw count matrix')
+```
+
+# Inspect expression matrix before and after QC {.tabset}
+
+## Raw count matrix
+
+```{r inspect raw,fig.width=12,fig.height=9}
+plotDensities(log2(exps+1), group = groups, legend = 'topright',
+              main = paste0(setLabel, " (", nrow(exps), ' genes in total, plotting log2(counts))'))
+
+boxplot(value~X2, las=2, ylab = "log2(CPM)", xlab = '', cex.axis=0.75,
+        melt(cpm(exps, log=TRUE, normalized.lib.sizes = FALSE, prior.count=0.5)),
+        main=paste0(setLabel," Before Normalization"),col=groupcol)
+boxplot(value~variable, las=2, ylab = "log2(Counts)", xlab = '', cex.axis=0.75,
+        melt(log2(exps+0.5)),
+        main=paste0(setLabel," Before Normalization"),col=groupcol)
+```
+
+## After removing lowly expressed genes
+
+filterByExpr (edgeR function) is used to remove lowly expressed genes using grouping info.
+
+```{r filter low genes, fig.width= 12, fig.height=8 }
+# remove lowly expressed genes
+y <- DGEList(counts=exps,samples = pheno)
+y$samples$group= y$samples$Conditions
+keep.exprs <- filterByExpr(y) # filterByExpr will automatically filter base on grouping info stored in y$samples$group
+
+exps.f = exps[keep.exprs,]
+cat(paste0(length(keep.exprs[keep.exprs == T]),' genes are retained after filtering'))
+
+plotDensities(log2(exps.f+1), 
+              group = groups, 
+              legend = 'topright',
+              main = paste0(setLabel, " after removing lowly expressed genes (", length(keep.exprs[keep.exprs==T]), ' genes retained)'))
+
+
+```
+
+## After DESeq2 normalization
+
+```{r deseq2}
+# generate DESeq object
+try(if(!all(names(exps.f) == rownames(pheno))) stop("pheno data and expression data does not match each other"))
+dds = DESeqDataSetFromMatrix(countData =exps.f,
+                             colData = pheno,
+                             design = formula(~ PatientID + Conditions))
+# set reference level
+dds$Conditions = relevel(dds$Conditions, ref="Ctrl")
+
+# DESeq2 normalization
+# this step is automatically done in DESeq command below. Here we manually do it once is just for extract the normalized counts for PCOA plots and such. it is a redundant step in terms of running the model
+dds <- estimateSizeFactors(dds)
+#sizeFactors(dds) 
+dds.normalized_counts <- counts(dds, normalized=TRUE) ### use for PCA and boxplot
+
+# generate plots
+dds.normalized_counts.log = as.data.frame(cpm(dds.normalized_counts, 
+                               log=TRUE, 
+                               normalized.lib.sizes = FALSE,
+                               prior.count=0.5))
+
+plotDensities(dds.normalized_counts.log, group = groups, legend = 'topright',main = paste0(setLabel, " after filtering and DESeq Normalization"))
+boxplot(value~variable, las=2, ylab = "Counts", xlab = NULL, cex.axis=0.75,
+        melt(dds.normalized_counts.log), # melt just aggregate values in each column into a single colum and remove row names (using the sample names as row names instead)
+        main=paste0(setLabel, " After Filtering and DESeq normalization"), col=groupcol)
+```
+
+## ACAT normalized count
+
+```{r acat count}
+# Create ggpairs-like scatter plot with facets
+ACAT1 = dds.normalized_counts.log['ACAT1',,drop =F] %>% t
+colnames(ACAT1) = 'ACAT1_Deseq2_normalized'
+ACAT1 = merge(pheno,ACAT1,by = 0)
+ggplot(ACAT1, aes(x = Conditions, y = `ACAT1_Deseq2_normalized`, group = PatientID)) +
+  geom_point(aes(color = as.factor(PatientID)), size = 3) +  # Points colored by PatientID
+  geom_line(aes(color = as.factor(PatientID))) +  # Lines connecting points by PatientID
+  facet_wrap(~ Measurements, scales = "free_y") +  # Facet by Measurements
+  theme_bw() +  # Use a clean theme
+  labs(
+    title = "ACAT1_Deseq2_normalized expression by Conditions",
+    x = "Conditions",
+    y = "ACAT1_Deseq2_normalized",
+    color = "Patient ID"
+  ) +
+  theme(
+    strip.text = element_text(size = 12),  # Customize facet labels
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels
+  )
+
+```
+
+## MDS plot with normalized data
+
+```{r mds}
+plotMDS(dds.normalized_counts.log, col = groupcol, labels = pheno$SampleID, gene.selection = "common", main = paste0('MDS plot: ', setLabel))
+```
+
+# Differential expression analysis {.tabset}
+
+Please note that here we directly extracted the results without any LFC shrinkage. independentFiltering was also turned off to avoid any NA in the adjusted P values (more information can be found at: https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pvaluesNA). 
+
+```{r deg}
+# run DESeq model
+dds <- DESeq(dds, quiet = T)
+# get results
+## apply LFC shrinkage (more accurate effect size estimates; does not affect p or q value):
+#stat <- lfcShrink(dds, coef="Conditions_ACAT1_vs_Ctrl", type="apeglm")
+
+stat <- results(dds, name = 'Conditions_ACAT1_vs_Ctrl',independentFiltering = F)
+# this is the unshrinked 
+# stat = results(dds)
+# stat <- stat[order(stat$padj),]
+
+```
+
+
+## Key statistics 
+
+```{r deseq2 key stat}
+stat = as.data.frame(stat)
+stat$geneID = rownames(stat)
+stat = rename_deseq2_results_to_limma(stat)
+stat$adj.P.Val[is.na(stat$adj.P.Val)] <- 'NA after independent filtering'
+create_dt(stat,'DESeq2 results')
+```
+
+## P value histogram
+
+```{r p val hist}
+# p value histogram
+hist(stat[,"P.Value"],main=paste0("DESeq2_Pval_", setLabel))
+```
+
+
+```{r save image}
+save.image(file = "../data/Session1.DGE_analysis_deseq2_2samples.RData")
+```

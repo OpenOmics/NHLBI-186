@@ -1,0 +1,241 @@
+---
+title: "NHLBI-186 ACAT1 in Human CD4 T cells Bulk RNA-seq "
+subtitle: "Session 1: Differential Expression Analysis (Limma-voom)"
+date: "`r Sys.Date()`"
+author: Yue (Gary) Zhang, PhD
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE}
+#.libPaths('/Users/zhangy68/R/R_4.4.2')
+knitr::opts_chunk$set(warning = F, message = F,echo = F) 
+```
+
+```{r Initiate, results='hide'}
+## initiate ---------------------------------------------------------
+packages_to_load = c('dplyr','ggplot2','gplots','limma','stringr','usedist',
+                     'cowplot','GGally','scales','rstatix','wesanderson', 'readxl',
+                     'Biobase','reshape','edgeR','plotly','DT','tidyr','ComplexHeatmap','ggfun','ggrepel')
+# Load packages without printing output
+invisible(suppressPackageStartupMessages({
+    lapply(packages_to_load, library, character.only = TRUE)
+}))
+
+# set variables 
+setwd('./')
+set.seed('123')
+col21 <- rev(c("tomato1","darkblue","turquoise1","lightblue","darkred","mediumblue","purple","bisque",
+               "greenyellow","yellow","violetred2","darkgreen","darkgoldenrod1","deeppink3","cadetblue4",
+               "orchid2","seagreen3","purple4","dodgerblue2","red","gray27"))
+
+```
+
+```{r function section}
+source('utils.R')
+```
+
+```{r load data}
+exps = read.csv("../data/121224-JingWu-ACAT1_CD4T_RNAseq-counts-on-gene.txt", row.names = 1, sep = '\t',check.names = F)
+pheno = read.csv('../data/metadata.csv')
+```
+
+# Input dataframe
+
+## Phenotype data
+
+```{r parse data,results='hide'}
+rownames(pheno) = pheno$SampleID
+pheno$PatientID = paste0('Patient',pheno$PatientID)
+pheno$PatientID = as.factor(pheno$PatientID)
+pheno$Conditions = factor(pheno$Conditions,c('Ctrl','ACAT1'))
+# remove Naive group in "Measurements"
+pheno = subset(pheno, Measurements != 'Naive')
+
+names(exps) = pheno$SampleID[match(names(exps),pheno$SampleID.old)]
+exps = select(exps, pheno$SampleID)
+
+# sanity check --- order of samples matches in exps and pheno
+stopifnot(all(names(exps) == rownames(pheno)))
+
+saveRDS(exps,'../data/expression.rds')
+saveRDS(pheno,'../data/phenotype.rds')
+```
+
+```{r show metadata}
+create_dt(pheno,'Phenotype data')
+```
+
+## Expression matrix (raw data)
+
+```{r exp table}
+create_dt(exps,'Raw count matrix')
+```
+
+# Filter lowly expressed genes, normalization, and remove mean-variance dependency
+
+TMM method is used to normalize expression table by samples to account for different sequencing depth and composition effects between samples. VOOM method is used to remove heteroscedascity from count data.
+
+```{r deg init}
+# set analysis parameters
+nmethod1 = 'TMM'
+nmethod2 = 'quantile' 
+plot_voom=TRUE
+setLabel = 'ACAT1_vs_Control'
+groups = pheno$Conditions
+pair = pheno$PatientID
+groupcol = getcol(groups,2)
+
+# reset object-dependent variables to zero as a precaution
+
+d1 <- NULL
+contr.matrix <- NULL
+y <- NULL
+keep.exprs <- NULL
+v <- NULL
+theFit <- NULL
+theFitE <- NULL
+theEset <- NULL
+stat <- NULL
+
+# sanity check
+try(if(!all(names(exps) == rownames(pheno))) stop("pheno data and expression data does not match each other"))
+```
+
+## Inspect raw table
+
+```{r inspect raw,fig.width=12,fig.height=9}
+plotDensities(log2(exps+1), group = groups, legend = 'topright',
+              main = paste0(setLabel, " (", nrow(exps), ' genes in total, plotting log2(counts))'))
+
+boxplot(value~X2, las=2, ylab = "log2(CPM)", xlab = '', cex.axis=0.75,
+        melt(cpm(exps, log=TRUE, normalized.lib.sizes = FALSE, prior.count=0.5)),
+        main=paste0(setLabel," Before Normalization"),col=groupcol)
+boxplot(value~variable, las=2, ylab = "log2(Counts)", xlab = '', cex.axis=0.75,
+        melt(log2(exps+0.5)),
+        main=paste0(setLabel," Before Normalization"),col=groupcol)
+```
+
+## Remove lowly expressed genes
+
+filterByExpr is used to remove lowly expressed genes using grouping info.
+
+```{r filter low genes, fig.width= 12, fig.height=8 }
+
+# remove lowly expressed genes
+y <- DGEList(counts=exps,samples = pheno)
+y$samples$group= y$samples$Conditions
+keep.exprs <- filterByExpr(y) # filterByExpr will automatically filter base on grouping info stored in y$samples$group
+
+#summary(keep.exprs)
+y <- y[keep.exprs, , keep.lib.sizes=FALSE] # keep.lib.sizes set to false so that the library size will be recalculated after removing the genes
+cat(paste0(length(keep.exprs[keep.exprs == T]),' genes are retained after filtering'))
+
+plotDensities(log2(y$counts+1), 
+              group = groups, 
+              legend = 'topright',
+              main = paste0(setLabel, " after removing lowly expressed genes (", length(keep.exprs[keep.exprs==T]), ' genes retained)'))
+
+# calculate normalization factor; the normalization factors will be stored in y but not applied to the count matrix yet
+#print(paste0('calcNormFactors method is ', nmethod1))
+y <- calcNormFactors(y,method = nmethod1) # TMM method to normalize expression table by samples to account for different sequencing depth and composition between samples
+
+```
+
+## Inspect the design/contrast matrix and the data heteroscedascity
+
+```{r modeling,fig.width=12,fig.height=8}
+# specify a contrast model 
+d1 = model.matrix(~ 0 + PatientID + Measurements + Conditions, data = pheno)
+colSums(d1)
+table(groups)
+d1
+
+# When operating on a DGEList-object, voom converts raw counts to log-CPM values by automatically extracting library sizes and normalisation factors from x itself. Additional normalisation to log-CPM values can be specified within voom using the normalize.method argument.
+
+# removing heteroscedascity from count data
+v <- voom(y, d1, 
+          normalize.method = nmethod2, #quantile normalization is  used here (could be used to correct extremely skewed data)
+          plot=TRUE)
+theEset <- v$E
+
+# fitting linear models for comparisons of interest
+theFit <- lmFit(v, d1)
+
+theFitE <- eBayes(theFit)
+```
+
+## Inspect filtered and normalized data
+
+```{r filtered MDS}
+
+plotDensities(theEset, group = groups, legend = 'topright',main = paste0(setLabel, " after filtering and Normalization with Voom"))
+boxplot(value~variable, las=2, ylab = "Counts", xlab = NULL, cex.axis=0.75,
+        melt(as.data.frame(theEset)), # melt just aggregate values in each column into a single colum and remove row names (using the sample names as row names instead)
+        main=paste0(setLabel, " After Filtering and voom normalization"), col=groupcol)
+plotSA(theFit) + title('Variance-mean expression dependency after voom normalization')
+```
+
+# Results
+
+## ACAT normalized count
+
+```{r acat count}
+# Create ggpairs-like scatter plot with facets
+ACAT1 = theEset['ACAT1',,drop =F] %>% t
+colnames(ACAT1) = 'ACAT1_TMM_Quantile_Voom'
+ACAT1 = merge(pheno,ACAT1,by = 0)
+ggplot(ACAT1, aes(x = Conditions, y = `ACAT1_TMM_Quantile_Voom`, group = PatientID)) +
+  geom_point(aes(color = as.factor(PatientID)), size = 3) +  # Points colored by PatientID
+  geom_line(aes(color = as.factor(PatientID))) +  # Lines connecting points by PatientID
+  facet_wrap(~ Measurements, scales = "free_y") +  # Facet by Measurements
+  theme_bw() +  # Use a clean theme
+  labs(
+    title = "ACAT1-TMM Quantile Voom by Conditions",
+    x = "Conditions",
+    y = "ACAT1-TMM Quantile Voom",
+    color = "Patient ID"
+  ) +
+  theme(
+    strip.text = element_text(size = 12),  # Customize facet labels
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels
+  )
+
+```
+
+## MDS plot
+
+```{r mds}
+plotMDS(theEset, col = groupcol, labels = v$targets$SampleID, gene.selection = "common", main = paste0('MDS plot: ', setLabel))
+```
+
+## p value distribution in the differential expression tests
+
+```{r dge}
+stat = topTable(theFitE, coef = 'ConditionsACAT1', number = nrow(theFitE), sort.by = "none")
+stat$geneID = rownames(stat)
+# histogram
+hist(stat[,"P.Value"],main=paste0("Limma_Pval_", setLabel))
+saveRDS(stat,'limma.de.stat.RDS')
+```
+
+
+## Differential expression key statistics
+
+Here we show the test statistics for all genes tested for the contrast ACAT1 VS Control (BH method for correcting p values).
+
+```{r show dge}
+create_dt(stat,'Statistics for all genes tested')
+```
+
+```{r save image}
+save.image(file = "../data/Session1.DGE_analysis_limma.RData")
+```
