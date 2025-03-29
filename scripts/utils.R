@@ -246,3 +246,190 @@ rename_deseq2_results_to_limma = function(df){
 }
 
 
+# fGSEA wrapper function that parse the database, prepares input gene list, and run gsea function
+run_gsea_v2 <- function(geneRank, qval = 0.05, refDB = msigDB,
+                        enrichDB=c("KEGG", "REACTOME", "GO", "HALLMARK","IMMUNESIGDB","VAX")) {
+  # # dummy variable for testing
+  # geneRank = DEG.s.r.rank
+  # qval = 0.05
+  # refDB = msigDB
+  # enrichDB = 'HALLMARK'
+  
+  # need to add the following line to the main script
+  #msigbr to download all genes and their GO IDs #Ref:http://yulab-smu.top/biomedical-knowledge-mining-book/universal-api.html
+  #msigDB <-  msigdbr::msigdbr(species = "Homo sapiens")
+  
+  # parse gene lists
+  ## select the genes based on the desired gene list
+  if (enrichDB == "KEGG") {
+    db <- refDB %>% dplyr::filter(gs_subcat=="CP:KEGG") %>% 
+      mutate(gs_name = str_remove(gs_name, "KEGG_")) %>% 
+      dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% #gene_symbol#ensembl_gene
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_exact_source))
+    
+  } else if (enrichDB == "REACTOME"){
+    db <- refDB %>% dplyr::filter(gs_subcat=="CP:REACTOME") %>% 
+      mutate(gs_name = str_remove(gs_name, "REACTOME_")) %>% 
+      dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_exact_source))
+    
+  }else if (enrichDB == "HALLMARK"){
+    db <- refDB %>% dplyr::filter(gs_cat=="H") %>% 
+      mutate(gs_name = str_remove(gs_name, "HALLMARK_")) %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+  }else if (enrichDB == "VAX"){
+    db <- refDB %>% dplyr::filter(gs_subcat=="VAX") %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+  }else if (enrichDB == "IMMUNESIGDB"){
+    db <- refDB %>% dplyr::filter(gs_subcat=="IMMUNESIGDB") %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+  } else if (enrichDB == "GO") {
+    db <- refDB %>% dplyr::filter(gs_subcat=="GO:BP") %>%
+      dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% 
+      mutate(gs_name = str_remove(gs_name, "GOBP_")) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% dplyr::select(!c(gs_exact_source))
+  }
+  
+  else{
+    stop("Error: enrichDB must be one of 'KEGG', 'REACTOME', 'HALLMARK', 'VAX', 'IMMUNESIGDB', or 'GO'.")
+  }
+  
+  # Group gene symbols by gs_name and remove duplicates (this will generate a list of pathway-named vectors of genes)
+  geneSet.parsed <- lapply(split(db$gene_symbol, db$gs_name), unique)
+  
+  # Run GSEA using fgsea
+  gsea.res = fgsea(pathways = geneSet.parsed,
+                   stats = geneRank,
+                   eps = 0)
+  gsea.res = subset(gsea.res,padj<qval)
+  gsea.res$direction = ifelse(gsea.res$NES>0,'Upregulation',
+                              ifelse(gsea.res$NES<0,'Downregulation','0'))
+  return(gsea.res)
+}
+
+
+# enrichment function that parse the database, prepares input gene list, and run clusterprofiler enricher function
+geneEnrichments_v2 <- function(geneSet, bkgGenes = NULL, pval = 1, qval = 1, refDB = msigDB, refDBName = "org.Hs.eg.db",
+                               enrichDB=c("KEGG", "REACTOME", "GO", "HALLMARK","IMMUNESIGDB","VAX"), targetedGO = NULL) {
+  # need to add the following line to the main script
+  #msigbr to download all genes and their GO IDs #Ref:http://yulab-smu.top/biomedical-knowledge-mining-book/universal-api.html
+  #msigDB <-  msigdbr::msigdbr(species = "Homo sapiens")
+  
+  sigGenes <- unique(geneSet)
+  backgroundGenes <- unique(bkgGenes)
+  
+  if (enrichDB == "KEGG") {
+    kegg_db <- refDB %>% dplyr::filter(gs_subcat=="CP:KEGG") %>% 
+      mutate(gs_name = str_remove(gs_name, "KEGG_")) %>% 
+      dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% #gene_symbol#ensembl_gene
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_exact_source))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=kegg_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval)
+    
+  } else if (enrichDB == "REACTOME"){
+    reactome_db <- refDB %>% dplyr::filter(gs_subcat=="CP:REACTOME") %>% 
+      mutate(gs_name = str_remove(gs_name, "REACTOME_")) %>% 
+      dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_exact_source))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=reactome_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval) 
+    
+  }else if (enrichDB == "HALLMARK"){
+    hallmark_db <- refDB %>% dplyr::filter(gs_cat=="H") %>% 
+      mutate(gs_name = str_remove(gs_name, "HALLMARK_")) %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=hallmark_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval) 
+    
+  }else if (enrichDB == "VAX"){
+    VAX_db <- refDB %>% dplyr::filter(gs_subcat=="VAX") %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=VAX_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval) 
+    
+  }else if (enrichDB == "IMMUNESIGDB"){
+    IMMUNESIGDB_db <- refDB %>% dplyr::filter(gs_subcat=="IMMUNESIGDB") %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=IMMUNESIGDB_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval) 
+    
+  }else if (enrichDB == "IMMUNESIGDB_CD4Tcell_subset"){
+    IMMUNESIGDB_db <- IMMUNESIGDB_CD4Tcell_subset %>% 
+      dplyr::select(gs_name, gs_id, gene_symbol) %>% 
+      mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+      mutate(gs_name= paste(gs_id, gs_name, sep = ":")) %>% 
+      dplyr::select(!c(gs_id))
+    
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=IMMUNESIGDB_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval) 
+    
+  }
+  else{
+    if(!is.null(targetedGO)){ 
+      pat <- c("GOBP_", "REACTOME_", "WP_")
+      GO_db <- refDB  %>% dplyr::filter(str_detect(gs_name, paste(targetedGO, collapse = "|"))) %>% 
+        mutate(gs_name = str_remove(gs_name, paste(pat, collapse = "|"))) %>% 
+        mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+        mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>%
+        dplyr::select(gs_name, gene_symbol)
+    }else{
+      GO_db <- refDB %>% dplyr::filter(gs_subcat=="GO:BP") %>%
+        dplyr::select(gs_name, gs_exact_source, gene_symbol) %>% 
+        mutate(gs_name = str_remove(gs_name, "GOBP_")) %>% 
+        mutate(gs_name = str_replace_all(gs_name, "_", " "), gs_name = str_to_sentence(gs_name)) %>% 
+        mutate(gs_name= paste(gs_exact_source, gs_name, sep = ":")) %>% dplyr::select(!c(gs_exact_source))
+    }
+    pathway <- clusterProfiler::enricher(sigGenes, TERM2GENE=GO_db, universe = backgroundGenes, 
+                                         pvalueCutoff = pval, qvalueCutoff = qval)
+    
+  }
+  
+  if(is.null(pathway)==TRUE){
+    pathwayData <- as.data.frame(matrix(nrow=0, ncol = 3))
+  }else{
+    pathwayData <- pathway %>% as.data.frame(.) %>% arrange(desc(Count))
+  }
+  # 
+  #   if(nrow(pathwayData) != 0) {
+  #     pathwayData <- pathwayData %>%
+  #       mutate(GeneRatio2 = unname(sapply(GeneRatio, function(x) eval(parse(text = x)))),
+  #              BgRatio2 = unname(sapply(BgRatio, function(x) eval(parse(text = x)))), GeneEnrichment = GeneRatio2/BgRatio2) %>%
+  #       dplyr::select(!c(GeneRatio2, BgRatio2)) %>% dplyr::filter(Count>=3)
+  #   }
+  return(pathwayData)
+}

@@ -1,0 +1,109 @@
+---
+title: "NHLBI-186 ACAT1 in Human CD4 T cells Bulk RNA-seq "
+subtitle: "Session 4: Gene Set Enrichment Analysis for 8C, 8A, 11C, and 11A"
+date: "`r Sys.Date()`"
+author: Yue (Gary) Zhang, PhD
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=TRUE}
+#.libPaths('/Users/zhangy68/R/R_4.4.2')
+knitr::opts_chunk$set(warning = T, message = T,echo = F) 
+```
+
+```{r Initiate, results='hide'}
+## initiate ---------------------------------------------------------
+packages_to_load = c('dplyr','ggplot2','gplots','limma','stringr','usedist',
+                     'cowplot','GGally','scales','rstatix','wesanderson', 'readxl',
+                     'Biobase','reshape','edgeR','plotly','DT','tidyr','ComplexHeatmap','ggfun','ggrepel', 'maSigPro','DESeq2',"org.Hs.eg.db","AnnotationDbi","clusterProfiler","fgsea")
+# Load packages without printing output
+invisible(suppressPackageStartupMessages({
+    lapply(packages_to_load, library, character.only = TRUE)
+}))
+
+# set variables 
+setwd('./')
+set.seed('123')
+col21 <- rev(c("tomato1","darkblue","turquoise1","lightblue","darkred","mediumblue","purple","bisque",
+               "greenyellow","yellow","violetred2","darkgreen","darkgoldenrod1","deeppink3","cadetblue4",
+               "orchid2","seagreen3","purple4","dodgerblue2","red","gray27"))
+
+```
+
+
+```{r function section}
+source('utils.R')
+```
+
+```{r load data}
+load("../data/Session1.DGE_analysis_deseq2_2samples_p3p4.RData")
+```
+
+# Prepare gene ranks
+
+The sign of log2 fold change multiplied by -log10 of raw p value was used as the gene rank.
+
+```{r prep gene list}
+
+# Splitting the geneID column by "|" into geneEnsembl and geneName columns
+DEG <- stat
+# Remove the rows with duplicated gene names
+dupGene = DEG$geneName[duplicated(DEG$geneName)]
+#no duplicated genes
+
+# generate a gene list
+DEG$signlfc_neglogp = sign(DEG$logFC) * (-log10(DEG$P.Value))
+DEG.s.r = DEG[order(DEG$signlfc_neglogp,decreasing = T),]
+
+create_dt(DEG.s.r, caption = 'Gene Ranks (column signlfc_neglogp)')
+
+DEG.s.r.rank = DEG.s.r$signlfc_neglogp
+names(DEG.s.r.rank) = DEG.s.r$geneID
+```
+
+# GSEA analysis {.tabset}
+
+Adjusted P value < 0.05 was used as a cutoff threshold to report the significant pathways.
+
+```{r gsea by lfc sign and q val,results='asis'}
+#msigbr to download all genes and their GO IDs #Ref:http://yulab-smu.top/biomedical-knowledge-mining-book/universal-api.html
+msigDB <-  msigdbr::msigdbr(species = "Homo sapiens")
+
+qcutoff = 0.05
+gsea.allgs = NULL
+for (gs in c("KEGG", "REACTOME", "GO", "HALLMARK","IMMUNESIGDB","VAX")){
+  res = run_gsea_v2(DEG.s.r.rank,qval = qcutoff,enrichDB = gs)
+  res$GeneSet=gs
+  gsea.allgs = bind_rows(gsea.allgs,res)
+  cat('\n')
+  cat(paste0("## ", gs))
+  cat('\n')
+  print(htmltools::tagList(create_dt(res,caption = paste0('Significant pathways (', qcutoff, ')'))))
+}
+
+```
+
+## Summary
+
+```{r gsea summary}
+summary = as.data.frame(table(gsea.allgs$GeneSet,gsea.allgs$direction))
+summary = pivot_wider(summary,names_from = 'Var2',values_from = 'Freq')
+names(summary)[1] = 'Gene Set'
+create_dt(summary,'Number of significant pathways')
+```
+
+# Session Information
+
+```{r save session}
+save.image(file = '../data/session_4_GSEA.rdata')
+sessionInfo()
+```

@@ -1,0 +1,162 @@
+---
+title: "NHLBI-186 ACAT1 in Human CD4 T cells Bulk RNA-seq "
+subtitle: "Over Representation Analysis for 8C, 8A, 11C, and 11A (with CD4 T related ImmuneSigDB pathways)"
+date: "`r Sys.Date()`"
+author: Yue (Gary) Zhang, PhD
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=TRUE}
+#.libPaths('/Users/zhangy68/R/R_4.4.2')
+knitr::opts_chunk$set(warning = T, message = T,echo = F) 
+```
+
+```{r Initiate, results='hide'}
+## initiate ---------------------------------------------------------
+packages_to_load = c('dplyr','ggplot2','gplots','limma','stringr','usedist',
+                     'cowplot','GGally','scales','rstatix','wesanderson', 'readxl',
+                     'Biobase','reshape','edgeR','plotly','DT','tidyr','ComplexHeatmap','ggfun','ggrepel', 'maSigPro','DESeq2',"org.Hs.eg.db","AnnotationDbi","clusterProfiler","fgsea")
+# Load packages without printing output
+invisible(suppressPackageStartupMessages({
+    lapply(packages_to_load, library, character.only = TRUE)
+}))
+
+# set variables 
+setwd('./')
+set.seed('123')
+col21 <- rev(c("tomato1","darkblue","turquoise1","lightblue","darkred","mediumblue","purple","bisque",
+               "greenyellow","yellow","violetred2","darkgreen","darkgoldenrod1","deeppink3","cadetblue4",
+               "orchid2","seagreen3","purple4","dodgerblue2","red","gray27"))
+
+```
+
+```{r function section}
+source('utils.R')
+```
+
+```{r load data}
+load("../data/Session1.DGE_analysis_deseq2_2samples_p3p4.RData")
+```
+
+```{r prep gene list}
+# Splitting the geneID column by "|" into geneEnsembl and geneName columns
+DEG <- stat
+# Remove the rows with duplicated gene names
+dupGene = DEG$geneName[duplicated(DEG$geneName)]
+#no duplicated genes
+
+```
+
+# Volcano plot
+
+```{r volcano plot}
+df <- DEG
+
+# Ensure df has the necessary columns
+if (!all(c("logFC", "P.Value") %in% colnames(df))) {
+  stop("Dataframe must contain 'logFC' and 'P.Value' columns")
+}
+
+# Compute -log10 of the P-value
+df$negLogP <- -log10(df$P.Value)
+
+# Define significance thresholds
+logFC_threshold <- 0
+pval_threshold <- 0.05
+
+df$Significance <- "Not Significant"
+df$Significance[df$logFC > logFC_threshold & df$P.Value < pval_threshold] <- "Upregulated"
+df$Significance[df$logFC < -logFC_threshold & df$P.Value < pval_threshold] <- "Downregulated"
+
+# Count the number of upregulated and downregulated genes
+num_upregulated <- sum(df$Significance == "Upregulated")
+num_downregulated <- sum(df$Significance == "Downregulated")
+
+# Create the volcano plot
+volcano_plot <- ggplot(df, aes(x = logFC, y = negLogP, color = Significance)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue", "Not Significant" = "gray")) +
+  theme_minimal() +
+  geom_vline(xintercept = c(-logFC_threshold, logFC_threshold), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(pval_threshold), linetype = "dashed", color = "black") +
+  labs(title = "Volcano Plot",
+       subtitle = paste("Downregulated:", num_downregulated, "genes; Upregulated:", num_upregulated, "genes"),
+       x = "Log Fold Change",
+       y = "-Log10 P-value",
+       color = "Significance (based on P value and LogFC)")
+
+# Print the plot
+print(volcano_plot)
+
+```
+
+# Over-representation Analysis 
+
+Over-representation analysis is performed with CD4 T cell-related pathways in IMMUNESIGDB gene sets. All pathways having 'CD4 T' in description were selected for analysis.
+
+```{r cl fun}
+#msigbr to download all genes and their GO IDs #Ref:http://yulab-smu.top/biomedical-knowledge-mining-book/universal-api.html
+msigDB <-  msigdbr::msigdbr(species = "Homo sapiens")
+
+IMMUNESIGDB_CD4Tcell_subset <- msigDB %>%
+  filter(gs_subcat=="IMMUNESIGDB") %>% 
+  filter(grepl('CD4 T',gs_description,ignore.case = TRUE))
+
+IMMUNESIGDB_CD4Tcell_subset.manifest <- IMMUNESIGDB_CD4Tcell_subset %>%
+  select(c(gs_description,gene_symbol,gs_name)) %>%
+  group_by(gs_name) %>%
+  summarise(gene_set_description = unique(gs_description),
+            genes = paste(gene_symbol, collapse = ","))
+create_dt(IMMUNESIGDB_CD4Tcell_subset.manifest,"CD4 T cell related IMMUNESIGDB pathways")
+```
+
+## Upregulation 
+
+__Selecting genes with logFC > 0 & P.Value < 0.05.__
+
+```{r run enrich }
+DEG.sig = subset(DEG, logFC > 0 & P.Value < 0.05)
+create_dt(DEG.sig,caption = paste0(nrow(DEG.sig), ' genes selected for ORA analysis'))
+DEG.sig = DEG.sig %>% pull(geneID)
+
+pval_cutoff = 1
+qval_cutoff = 1
+
+IMMUN.out = geneEnrichments_v2(DEG.sig, bkgGenes = DEG$geneID, refDB = msigDB, enrichDB = "IMMUNESIGDB_CD4Tcell_subset", pval = pval_cutoff, qval = qval_cutoff) 
+
+create_dt(IMMUN.out,'Unfiltered results')
+```
+
+## Down-regulation
+
+__Selecting genes with logFC < 0 & P.Value < 0.05.__
+
+```{r run enrich 2}
+DEG.sig = subset(DEG, logFC < 0 & P.Value < 0.05)
+create_dt(DEG.sig,caption = paste0(nrow(DEG.sig), ' genes selected for ORA analysis'))
+DEG.sig = DEG.sig %>% pull(geneID)
+
+pval_cutoff = 1
+qval_cutoff = 1
+
+IMMUN.out = geneEnrichments_v2(DEG.sig, bkgGenes = DEG$geneID, refDB = msigDB, enrichDB = "IMMUNESIGDB_CD4Tcell_subset", pval = pval_cutoff, qval = qval_cutoff) 
+
+create_dt(IMMUN.out,'Unfiltered results')
+
+```
+
+# Session Information
+
+```{r save session}
+save.image(file = '../data/session_3_ORA.rdata')
+sessionInfo()
+```

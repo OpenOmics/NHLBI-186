@@ -229,5 +229,5 @@ hist(stat[,"P.Value"],main=paste0("DESeq2_Pval_", setLabel))
 
 
 ```{r save image}
-save.image(file = "../data/Session1.DGE_analysis_deseq2_2samples.RData")
+save.image(file = "../data/Session1.DGE_analysis_deseq2_2samples_p3p4.RData")
 ```
